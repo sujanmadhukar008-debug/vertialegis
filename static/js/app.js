@@ -242,6 +242,10 @@ function showUploadResult(j) {
           <div style="font-size:10px;color:var(--text3)">Confidence</div>
         </div>
       </div>
+      ${j.status === 'failed' ? `
+      <div class="banner b-red" style="margin-bottom:1rem">
+        <strong>AI Processing Failed:</strong> ${j.extracted_data?.error || 'Unknown error occurred during extraction.'}
+      </div>` : ''}
       ${ed ? `
       <div class="grid-2" style="margin-bottom:1rem">
         <div>
@@ -257,9 +261,12 @@ function showUploadResult(j) {
           <div class="kv-row"><span>Confidence</span>${conf}%</div>
         </div>
       </div>
-      ` : '<div class="text-muted">No data extracted</div>'}
+      ` : '<div class="text-muted" style="margin-bottom:1rem">No data could be extracted from this document.</div>'}
       <div class="btn-row">
-        <button class="btn-primary" onclick="navigate('review',document.querySelector('.nav-item[onclick*=\\'review\\']'))">Review & verify extraction →</button>
+        ${j.status === 'failed' ? 
+          `<button class="btn-primary" onclick="window.location.reload()">Try Again</button>` :
+          `<button class="btn-primary" onclick="navigate('review',document.querySelector('.nav-item[onclick*=\\'review\\']'))">Review & verify extraction →</button>`
+        }
         <button class="btn-ghost" onclick="showAuditModal(${j.id})">View AI Decision Audit</button>
       </div>
     </div>`;

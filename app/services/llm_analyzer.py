@@ -168,25 +168,32 @@ JUDGMENT TEXT:
 {text}"""
 
 def _clean_json(text: str) -> str:
-    """Strip markdown fences and whitespace."""
+    """Strip markdown blocks and common LLM noise."""
+    # Strip markdown code blocks if present
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
+    
     text = text.strip()
-    text = re.sub(r"^```(?:json)?", "", text)
-    text = re.sub(r"```$", "", text)
-    return text.strip()
+    # Remove common trailing comma issues before closing braces/brackets
+    text = re.sub(r',\s*([\]}])', r'\1', text)
+    return text
 
 def analyze_judgment_unified(text: str, retries: int = 2) -> Dict[str, Any]:
     """
     Send judgment text to Gemini, return structured unified extraction.
-    Includes robust parsing, validation, and retry logic.
+    Includes robust parsing, validation, and exhaustive debug logging.
     """
     model = get_model()
-    # Truncate text to fit within context limits while keeping bulk of content
     truncated_text = text[:40000] 
     prompt = UNIFIED_PROMPT.format(text=truncated_text)
     
     last_error = None
     for attempt in range(retries + 1):
         mode = "strict" if attempt == 0 else "fallback"
+        print(f"\n--- AI EXTRACTION ATTEMPT {attempt + 1} ({mode}) ---")
+        
         try:
             response = model.generate_content(
                 prompt,
@@ -196,13 +203,27 @@ def analyze_judgment_unified(text: str, retries: int = 2) -> Dict[str, Any]:
                 )
             )
             
-            raw_json = _clean_json(response.text)
-            data = json.loads(raw_json)
+            raw_text = response.text
+            print(f"RAW LLM RESPONSE (Length: {len(raw_text)} chars):\n{raw_text[:2000]}...") # Log first 2k chars
             
+            cleaned_json = _clean_json(raw_text)
+            print(f"CLEANED JSON SNIPPET:\n{cleaned_json[:500]}...")
+
+            data = json.loads(cleaned_json)
+            print("JSON PARSE: SUCCESS")
+
             # Validation using Pydantic
-            validated_data = UnifiedAnalyzerResponse(**data)
-            validated_data.generation_mode = mode
-            
+            try:
+                validated_data = UnifiedAnalyzerResponse(**data)
+                validated_data.generation_mode = mode
+                print("PYDANTIC VALIDATION: SUCCESS")
+            except ValidationError as ve:
+                print(f"PYDANTIC VALIDATION ERROR:\n{ve}")
+                # If validation fails but it's valid JSON, we might still want to try and salvage 
+                # or just force a fallback retry
+                if attempt < retries: continue
+                raise ve
+
             # Post-process with Authoritative Logic
             result = validated_data.dict()
             for action in result["actions"]:
@@ -214,26 +235,30 @@ def analyze_judgment_unified(text: str, retries: int = 2) -> Dict[str, Any]:
                 "timestamp": time.time(),
                 "attempt": attempt + 1,
                 "retry_count": attempt,
-                "generation_mode": mode
+                "generation_mode": mode,
+                "response_length": len(raw_text)
             }
             return result
 
-        except (json.JSONDecodeError, ValidationError) as e:
-            last_error = e
-            print(f"Extraction attempt {attempt + 1} failed ({mode}): {e}")
+        except Exception as e:
+            last_error = str(e)
+            print(f"CRITICAL ERROR in attempt {attempt + 1}: {last_error}")
             if attempt < retries:
-                time.sleep(1) # Small backoff
+                time.sleep(1)
                 continue
     
-    # Final fail-safe: Return empty structure if all retries fail
-    print(f"All extraction attempts failed. Last error: {last_error}")
-    return UnifiedAnalyzerResponse(
-        case_details=CaseDetails(),
-        parties=PartyDetails(),
-        directions=[],
-        actions=[],
-        generation_mode="failed"
-    ).dict()
+    # FINAL STABILIZATION FAIL-SAFE:
+    # Return a valid structure so the UI/DB doesn't crash, but mark it as failed
+    print("ALL ATTEMPTS FAILED. Returning safe failure response.")
+    return {
+        "case_details": {"case_title": "Processing Failed", "case_number": "", "court": "", "date_of_order": ""},
+        "parties": {"petitioner": [], "respondents": []},
+        "directions": [],
+        "actions": [],
+        "generation_mode": "failed",
+        "error": last_error,
+        "_audit": {"status": "failed", "last_error": last_error}
+    }
 
 # Keep legacy functions for backward compatibility but route to unified
 def extract_judgment_data(text: str) -> dict:

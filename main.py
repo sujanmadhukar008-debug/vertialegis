@@ -94,8 +94,20 @@ def process_judgment(judgment_id: int, pdf_path: str):
         from app.services.llm_analyzer import analyze_judgment_unified
         try:
             extracted = analyze_judgment_unified(full_text)
+            if extracted.get("generation_mode") == "failed":
+                judgment.extraction_status = "failed"
+                judgment.status = "failed"
+                # Store the error in ed for frontend
+                ed = models.ExtractedData(
+                    judgment_id = judgment_id,
+                    case_number = json.dumps({"original": "N/A", "current": "N/A", "history": [], "error": extracted.get("error")}),
+                    case_title  = json.dumps({"original": "N/A", "current": "N/A", "history": []})
+                )
+                db.add(ed)
+                db.commit()
+                return
             judgment.extraction_status = "success"
-        except Exception:
+        except Exception as e:
             traceback.print_exc()
             judgment.extraction_status = "failed"
             judgment.status = "failed"
