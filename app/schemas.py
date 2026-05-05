@@ -66,6 +66,7 @@ class VerifyRequest(BaseModel):
     action: str                         # approve | edit | reject
     notes: Optional[str] = ""
     changes: Optional[dict] = {}
+    version: Optional[int] = None       # For atomic updates
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 class DashboardStats(BaseModel):

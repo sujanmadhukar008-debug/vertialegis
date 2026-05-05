@@ -3,8 +3,10 @@ import shutil
 import re
 import traceback
 from pathlib import Path
+import os
+import time
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,6 +72,8 @@ def process_judgment(judgment_id: int, pdf_path: str):
 
         # 1. Extract PDF text
         judgment.status = "extracting"
+        judgment.extraction_status = "pending"
+        judgment.action_status = "pending"
         db.commit()
 
         result     = extract_text_from_pdf(pdf_path)
@@ -82,39 +86,87 @@ def process_judgment(judgment_id: int, pdf_path: str):
 
         if not full_text.strip():
             judgment.status = "rejected"
+            judgment.extraction_status = "failed"
             db.commit()
             return
 
         # 2. LLM extraction
-        extracted = extract_judgment_data(full_text)
+        from app.services.llm_analyzer import analyze_judgment_unified
+        try:
+            extracted = analyze_judgment_unified(full_text)
+            judgment.extraction_status = "success"
+        except Exception:
+            traceback.print_exc()
+            judgment.extraction_status = "failed"
+            judgment.status = "failed"
+            db.commit()
+            return
 
-        # 3. Store extracted data
+        # 2.1 Audit Logging
+        ai_log = models.AILog(
+            judgment_id = judgment_id,
+            model_name  = extracted.get("_audit", {}).get("model", "unknown"),
+            input_text  = full_text[:10000],
+            output_text = json.dumps(extracted)
+        )
+        db.add(ai_log)
+
+        # 3. Store extracted data with versioned history
         cd    = extracted.get("case_details", {})
         par   = extracted.get("parties", {})
         
-        # Mapping to old DB structure
+        def wrap_versioned(val):
+            return json.dumps({
+                "original": val, 
+                "current": val, 
+                "history": []
+            })
+
         ed = models.ExtractedData(
             judgment_id      = judgment_id,
-            case_number      = cd.get("case_number"),
-            case_title       = cd.get("case_title"),
-            court_name       = cd.get("court"),
-            date_of_order    = cd.get("date_of_order"),
-            petitioners      = json.dumps(par.get("petitioner", [])),
-            respondents      = json.dumps(par.get("respondents", [])),
-            directions       = json.dumps(extracted.get("directions_summary", [])),
-            timelines        = json.dumps(extracted.get("deadlines", [])),
-            flags            = json.dumps({}), # new prompt doesn't have flags
-            confidence_score = extracted.get("confidence_score", 0),
-            source_highlights= json.dumps(extracted.get("source_reference", [])),
+            version          = 1,
+            case_number      = wrap_versioned(cd.get("case_number")),
+            case_title       = wrap_versioned(cd.get("case_title")),
+            court_name       = wrap_versioned(cd.get("court")),
+            date_of_order    = wrap_versioned(cd.get("date_of_order")),
+            petitioners      = json.dumps([{"original": p, "current": p, "history": []} for p in par.get("petitioner", [])]),
+            respondents      = json.dumps([{"original": r, "current": r, "history": []} for r in par.get("respondents", [])]),
+            directions       = json.dumps([{"original": d, "current": d, "history": []} for d in extracted.get("directions", [])]),
+            timelines        = json.dumps([]),
+            flags            = json.dumps({}),
+            confidence_score = extracted.get("_audit", {}).get("confidence", 0.8),
+            source_highlights= json.dumps(extracted.get("directions", [])),
         )
         db.add(ed)
+
+        # 4. Generate draft Action Plan immediately
+        actions = extracted.get("actions", [])
+        if actions:
+            judgment.action_status = "success"
+            has_high = any((a.get("priority") or "").lower() == "high" for a in actions)
+            overall_priority = "high" if has_high else "medium"
+
+            ap = models.ActionPlan(
+                judgment_id             = judgment_id,
+                version                 = 1,
+                nature_of_action        = "compliance",
+                priority_level          = overall_priority,
+                key_timelines           = json.dumps([]),
+                responsible_departments = json.dumps(list(set([a.get("department") for a in actions if a.get("department")]))),
+                specific_actions        = json.dumps([{"original": a, "current": a, "history": []} for a in actions]),
+                status                  = "draft",
+            )
+            db.add(ap)
+        else:
+            judgment.action_status = "failed"
+
         judgment.status = "extracted"
         db.commit()
 
     except Exception:
         traceback.print_exc()
         try:
-            judgment.status = "rejected"
+            judgment.status = "failed"
             db.commit()
         except Exception:
             pass
@@ -162,6 +214,39 @@ async def upload_judgment(
     return judgment
 
 
+# ── AI Audit Log ──────────────────────────────────────────────────────────────
+@app.get("/api/judgments/{judgment_id}/ai-log")
+def get_ai_log(judgment_id: int, db: Session = Depends(get_db)):
+    log = db.query(models.AILog).filter(models.AILog.judgment_id == judgment_id).order_by(models.AILog.timestamp.desc()).first()
+    if not log:
+        raise HTTPException(404, "AI log not found")
+    
+    output = json.loads(log.output_text) if log.output_text else {}
+    
+    # Decision Summary
+    summary = []
+    for action in output.get("actions", []):
+        text = (action.get("source_text") or "").lower()
+        reasons = []
+        if "shall" in text or "must" in text: reasons.append("Detected mandatory 'shall/must'")
+        if action.get("deadline") != "Not specified": reasons.append(f"Found deadline: {action.get('deadline')}")
+        if action.get("department"): reasons.append(f"Mapped to {action.get('department')}")
+        summary.append({
+            "action": action.get("action"),
+            "logic": reasons
+        })
+
+    return {
+        "model": log.model_name,
+        "timestamp": log.timestamp,
+        "mode": output.get("generation_mode", "strict"),
+        "retry_count": output.get("_audit", {}).get("retry_count", 0),
+        "decision_summary": summary,
+        "raw_output": output,
+        "input_snippet": log.input_text[:1000]
+    }
+
+
 # ── List judgments ─────────────────────────────────────────────────────────────
 @app.get("/api/judgments", response_model=list[schemas.JudgmentOut])
 def list_judgments(
@@ -185,22 +270,28 @@ def get_judgment(judgment_id: int, db: Session = Depends(get_db)):
     aps = j.action_plans
 
     def parse(field):
-        try: return json.loads(field) if field else []
-        except: return []
+        try:
+            val = json.loads(field) if field else None
+            return val
+        except:
+            return field
 
     return {
         "id":          j.id,
         "filename":    j.filename,
         "upload_date": j.upload_date,
         "status":      j.status,
+        "extraction_status": j.extraction_status,
+        "action_status": j.action_status,
         "page_count":  j.page_count,
         "raw_text":    j.raw_text,
         "extracted_data": {
             "id":               ed.id if ed else None,
-            "case_number":      ed.case_number if ed else None,
-            "case_title":       ed.case_title if ed else None,
-            "court_name":       ed.court_name if ed else None,
-            "date_of_order":    ed.date_of_order if ed else None,
+            "version":          ed.version if ed else 1,
+            "case_number":      parse(ed.case_number) if ed else None,
+            "case_title":       parse(ed.case_title) if ed else None,
+            "court_name":       parse(ed.court_name) if ed else None,
+            "date_of_order":    parse(ed.date_of_order) if ed else None,
             "petitioners":      parse(ed.petitioners if ed else None),
             "respondents":      parse(ed.respondents if ed else None),
             "directions":       parse(ed.directions if ed else None),
@@ -212,6 +303,7 @@ def get_judgment(judgment_id: int, db: Session = Depends(get_db)):
         "action_plans": [
             {
                 "id":                      ap.id,
+                "version":                 ap.version,
                 "nature_of_action":        ap.nature_of_action,
                 "priority_level":          ap.priority_level,
                 "key_timelines":           parse(ap.key_timelines),
@@ -231,9 +323,30 @@ def create_action_plan(judgment_id: int, db: Session = Depends(get_db)):
     j = db.query(models.Judgment).filter(models.Judgment.id == judgment_id).first()
     if not j:
         raise HTTPException(404, "Judgment not found")
+    
+    # Check if a draft action plan already exists (from unified extraction)
+    existing_ap = db.query(models.ActionPlan).filter(models.ActionPlan.judgment_id == judgment_id).first()
+    if existing_ap:
+        def parse(f):
+            try: return json.loads(f) if f else []
+            except: return []
+        
+        return {
+            "id":                      existing_ap.id,
+            "version":                 existing_ap.version,
+            "nature_of_action":        existing_ap.nature_of_action,
+            "priority_level":          existing_ap.priority_level,
+            "key_timelines":           parse(existing_ap.key_timelines),
+            "responsible_departments": parse(existing_ap.responsible_departments),
+            "specific_actions":        parse(existing_ap.specific_actions),
+            "status":                  existing_ap.status,
+            "created_at":              existing_ap.created_at,
+        }
+
+    # Fallback to manual generation if none exists (legacy or failed background)
     if j.status not in ("extracted", "verified"):
         raise HTTPException(400, f"Judgment must be extracted first (current: {j.status})")
-
+    
     ed = j.extracted_data
     if not ed:
         raise HTTPException(400, "No extracted data found")
@@ -247,28 +360,25 @@ def create_action_plan(judgment_id: int, db: Session = Depends(get_db)):
         "case_title":   ed.case_title,
         "court_name":   ed.court_name,
         "date_of_order":ed.date_of_order,
-        "petitioners":  parse(ed.petitioners),
-        "respondents":  parse(ed.respondents),
         "directions":   parse(ed.directions),
-        "timelines":    parse(ed.timelines),
-        "flags":        parse(ed.flags),
     }
 
+    from app.services.llm_analyzer import generate_action_plan
     actions = generate_action_plan(extracted_payload)
     if not isinstance(actions, list):
         actions = []
 
-    # Calculate overall priority
     has_high = any((a.get("priority") or "").lower() == "high" for a in actions)
     overall_priority = "high" if has_high else "medium"
 
     ap = models.ActionPlan(
         judgment_id             = judgment_id,
+        version                 = 1,
         nature_of_action        = "compliance",
         priority_level          = overall_priority,
         key_timelines           = json.dumps([]),
         responsible_departments = json.dumps(list(set([a.get("department") for a in actions if a.get("department")]))),
-        specific_actions        = json.dumps(actions),
+        specific_actions        = json.dumps([{"original": a, "current": a, "history": []} for a in actions]),
         status                  = "draft",
     )
     db.add(ap)
@@ -277,11 +387,12 @@ def create_action_plan(judgment_id: int, db: Session = Depends(get_db)):
 
     return {
         "id":                      ap.id,
+        "version":                 ap.version,
         "nature_of_action":        ap.nature_of_action,
         "priority_level":          ap.priority_level,
         "key_timelines":           [],
         "responsible_departments": json.loads(ap.responsible_departments),
-        "specific_actions":        actions,
+        "specific_actions":        parse(ap.specific_actions),
         "status":                  ap.status,
         "created_at":              ap.created_at,
     }
@@ -297,17 +408,35 @@ def verify_judgment(
     j = db.query(models.Judgment).filter(models.Judgment.id == judgment_id).first()
     if not j:
         raise HTTPException(404, "Judgment not found")
+    
+    ed = j.extracted_data
+    if not ed:
+        raise HTTPException(400, "No extracted data found")
+
+    # Atomic Locking
+    if body.version is not None and ed.version != body.version:
+        raise HTTPException(409, "Record has been updated by another user. Please refresh.")
 
     if body.action == "approve":
+        # Strict Validation
+        ed_json = json.loads(ed.case_number)
+        if not ed_json.get("current"):
+            raise HTTPException(400, "Case number is required for approval.")
         j.status = "verified"
     elif body.action == "reject":
         j.status = "rejected"
     elif body.action == "edit" and body.changes:
-        ed = j.extracted_data
-        if ed:
-            for field, value in body.changes.items():
-                if hasattr(ed, field):
-                    setattr(ed, field, value)
+        ed.version += 1
+        for field, new_val in body.changes.items():
+            if hasattr(ed, field):
+                current_data = json.loads(getattr(ed, field))
+                # Add to history
+                current_data["history"].append({
+                    "value": current_data["current"],
+                    "timestamp": datetime.now().isoformat()
+                })
+                current_data["current"] = new_val
+                setattr(ed, field, json.dumps(current_data))
         j.status = "verified"
     else:
         raise HTTPException(400, "action must be approve | edit | reject")
@@ -315,7 +444,7 @@ def verify_judgment(
     log = models.VerificationLog(
         judgment_id     = judgment_id,
         target          = "extraction",
-        target_id       = j.extracted_data.id if j.extracted_data else None,
+        target_id       = ed.id,
         reviewer_action = body.action,
         reviewer_notes  = body.notes or "",
         changes_made    = json.dumps(body.changes or {}),

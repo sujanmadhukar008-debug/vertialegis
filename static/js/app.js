@@ -109,7 +109,24 @@ function confBar(v) {
 }
 function safe(arr) {
   if (Array.isArray(arr)) return arr;
-  try { return JSON.parse(arr)||[]; } catch { return []; }
+  if (typeof arr === 'object' && arr !== null && !('final' in arr)) return [arr]; // Handle single object as array if not dual-value
+  if (typeof arr === 'object' && arr !== null && 'final' in arr) return [arr]; // It's a single dual-value object
+  try { 
+    const p = JSON.parse(arr);
+    return Array.isArray(p) ? p : (p ? [p] : []);
+  } catch { return []; }
+}
+function val(obj, fallback='—') {
+  if (obj === null || obj === undefined) return fallback;
+  if (typeof obj === 'string') return obj || fallback;
+  if (typeof obj === 'object' && 'current' in obj) return obj.current || fallback;
+  return obj || fallback;
+}
+function getHistory(obj) {
+  return (obj && typeof obj === 'object' && obj.history) || [];
+}
+function isEdited(obj) {
+  return getHistory(obj).length > 0;
 }
 function fmt(d) {
   if (!d) return '—';
@@ -187,9 +204,17 @@ async function pollStatus(id, progFill, progLabel) {
     try {
       const j = await API.get(`/api/judgments/${id}`);
       const sp = STATUS_PROGRESS[j.status] || {pct:50,label:'Processing…'};
+      
+      // Handle partial failures in label
+      let label = sp.label;
+      if (j.extraction_status === 'success' && j.action_status === 'failed') {
+        label = 'Extraction complete, but action plan failed. Please review manually.';
+      }
+
       progFill.style.width = sp.pct + '%';
-      progLabel.textContent = sp.label;
-      if (j.status === 'extracted' || j.status === 'verified' || j.status === 'rejected') {
+      progLabel.textContent = label;
+      
+      if (j.status === 'extracted' || j.status === 'verified' || j.status === 'rejected' || j.status === 'failed') {
         document.getElementById('upload-progress').classList.add('hidden');
         zone.classList.remove('hidden');
         showUploadResult(j);
@@ -220,24 +245,88 @@ function showUploadResult(j) {
       ${ed ? `
       <div class="grid-2" style="margin-bottom:1rem">
         <div>
-          <div class="sec-label">Extracted</div>
-          <div class="kv-row"><span>Case no.</span><strong>${ed.case_number||'—'}</strong></div>
-          <div class="kv-row"><span>Court</span><strong>${ed.court_name||'—'}</strong></div>
-          <div class="kv-row"><span>Date</span><strong>${ed.date_of_order||'—'}</strong></div>
+          <div class="sec-label">Extracted Data</div>
+          <div class="kv-row"><span>Case no.</span><strong>${val(ed.case_number)}</strong></div>
+          <div class="kv-row"><span>Court</span><strong>${val(ed.court_name)}</strong></div>
+          <div class="kv-row"><span>Date</span><strong>${val(ed.date_of_order)}</strong></div>
         </div>
         <div>
-          <div class="sec-label">Summary</div>
-          <div class="kv-row"><span>Directions</span><strong>${dirs.length} extracted</strong></div>
-          <div class="kv-row"><span>Timelines</span><strong>${safe(ed.timelines).length} found</strong></div>
-          <div class="kv-row"><span>Status</span>${statusBadge(j.status)}</div>
+          <div class="sec-label">AI Status</div>
+          <div class="kv-row"><span>Extraction</span>${j.extraction_status==='success'?'<span class="badge b-green">Success</span>':'<span class="badge b-red">Failed</span>'}</div>
+          <div class="kv-row"><span>Action Plan</span>${j.action_status==='success'?'<span class="badge b-green">Success</span>':'<span class="badge b-amber">Manual Required</span>'}</div>
+          <div class="kv-row"><span>Confidence</span>${conf}%</div>
         </div>
       </div>
       ` : '<div class="text-muted">No data extracted</div>'}
       <div class="btn-row">
         <button class="btn-primary" onclick="navigate('review',document.querySelector('.nav-item[onclick*=\\'review\\']'))">Review & verify extraction →</button>
-        <button class="btn-ghost" onclick="navigate('judgments',document.querySelector('.nav-item[onclick*=\\'judgments\\']'))">View all judgments</button>
+        <button class="btn-ghost" onclick="showAuditModal(${j.id})">View AI Decision Audit</button>
       </div>
     </div>`;
+}
+
+async function showAuditModal(id) {
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-title').textContent = 'AI Decision Audit Log';
+  document.getElementById('modal-body').innerHTML = '<div class="skeleton" style="height:300px"></div>';
+  try {
+    const log = await API.get(`/api/judgments/${id}/ai-log`);
+    const isFallback = log.mode === 'fallback';
+    
+    document.getElementById('modal-body').innerHTML = `
+      ${isFallback ? `<div class="banner b-amber" style="margin-bottom:1rem">⚠ Generated using fallback logic — Manual verification required.</div>` : ''}
+      <div class="card" style="margin-bottom:1rem">
+        <div class="kv-row"><span>Model</span><strong>${log.model}</strong></div>
+        <div class="kv-row"><span>Mode</span><span class="badge ${isFallback?'b-amber':'b-green'}">${log.mode}</span></div>
+        <div class="kv-row"><span>Retries</span><strong>${log.retry_count || 0}</strong></div>
+      </div>
+      
+      <div class="sec-label">Decision Summary (Why these actions?)</div>
+      <div class="card" style="margin-bottom:1rem">
+        ${log.decision_summary.map(s=>`
+          <div style="margin-bottom:10px">
+            <div style="font-size:12.5px;font-weight:500">Task: ${s.action}</div>
+            <ul style="margin:4px 0 0 15px;font-size:11px;color:var(--text2)">
+              ${s.logic.map(l=>`<li>${l}</li>`).join('')}
+            </ul>
+          </div>
+        `).join('') || '<div class="text-muted">No specific logic identified</div>'}
+      </div>
+
+      <details>
+        <summary class="sec-label" style="cursor:pointer;display:list-item">Raw AI Output JSON</summary>
+        <pre class="code-block">${JSON.stringify(log.raw_output, null, 2)}</pre>
+      </details>
+      
+      <div class="sec-label" style="margin-top:1rem">Input Snippet</div>
+      <div class="card" style="font-size:11px;color:var(--text3);font-family:monospace">${log.input_snippet}...</div>
+      <div class="btn-row"><button class="btn-ghost" onclick="closeModal()">Close Audit</button></div>
+    `;
+  } catch(e) {
+    document.getElementById('modal-body').innerHTML = `<div style="color:var(--red)">Audit log not found. ${humanError(e)}</div>`;
+  }
+}
+
+function showHistory(fieldName, obj) {
+  const history = getHistory(obj);
+  if (history.length === 0) return alert('No edit history for this field.');
+  
+  let html = `<div class="sec-label">Original AI Value</div><div class="card" style="margin-bottom:1rem">${obj.original}</div>`;
+  html += `<div class="sec-label">Revision Timeline</div>`;
+  history.forEach((h, i) => {
+    html += `
+      <div class="timeline-item">
+        <div class="timeline-dot" style="background:var(--amber)"></div>
+        <div>
+          <div style="font-size:10px;color:var(--text3)">Rev ${i+1} • ${fmt(h.timestamp)}</div>
+          <div style="font-size:12.5px">${h.value}</div>
+        </div>
+      </div>`;
+  });
+  
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  document.getElementById('modal-title').textContent = `History: ${fieldName}`;
+  document.getElementById('modal-body').innerHTML = html + `<div class="btn-row"><button class="btn-ghost" onclick="closeModal()">Close</button></div>`;
 }
 
 // ── Review ────────────────────────────────────────────────────────────────────
@@ -296,18 +385,21 @@ async function openReviewModal(id) {
       <div>
         <div class="sec-label">Case details — click to edit</div>
         <div class="card" style="margin-bottom:1rem">
-          <div style="margin-bottom:8px"><div style="font-size:10px;color:var(--text3);margin-bottom:3px">Case number</div><input class="inline-edit" id="e-case-number" value="${ed?.case_number||''}"/></div>
-          <div style="margin-bottom:8px"><div style="font-size:10px;color:var(--text3);margin-bottom:3px">Court name</div><input class="inline-edit" id="e-court-name" value="${ed?.court_name||''}"/></div>
-          <div style="margin-bottom:8px"><div style="font-size:10px;color:var(--text3);margin-bottom:3px">Date of order</div><input class="inline-edit" id="e-date" value="${ed?.date_of_order||''}"/></div>
-          <div><div style="font-size:10px;color:var(--text3);margin-bottom:3px">Case title</div><input class="inline-edit" id="e-title" value="${ed?.case_title||''}"/></div>
+          <div style="margin-bottom:8px"><div style="font-size:10px;color:var(--text3);margin-bottom:3px;display:flex;justify-content:space-between"><span>Case number</span><span class="link" onclick='showHistory("Case Number", ${JSON.stringify(ed?.case_number).replace(/'/g,"&apos;")})'>${isEdited(ed?.case_number)?'✎ History':'Original'}</span></div><input class="inline-edit" id="e-case-number" value="${val(ed?.case_number)}"/></div>
+          <div style="margin-bottom:8px"><div style="font-size:10px;color:var(--text3);margin-bottom:3px;display:flex;justify-content:space-between"><span>Court name</span><span class="link" onclick='showHistory("Court Name", ${JSON.stringify(ed?.court_name).replace(/'/g,"&apos;")})'>${isEdited(ed?.court_name)?'✎ History':'Original'}</span></div><input class="inline-edit" id="e-court-name" value="${val(ed?.court_name)}"/></div>
+          <div style="margin-bottom:8px"><div style="font-size:10px;color:var(--text3);margin-bottom:3px;display:flex;justify-content:space-between"><span>Date of order</span><span class="link" onclick='showHistory("Date", ${JSON.stringify(ed?.date_of_order).replace(/'/g,"&apos;")})'>${isEdited(ed?.date_of_order)?'✎ History':'Original'}</span></div><input class="inline-edit" id="e-date" value="${val(ed?.date_of_order)}"/></div>
+          <div><div style="font-size:10px;color:var(--text3);margin-bottom:3px;display:flex;justify-content:space-between"><span>Case title</span><span class="link" onclick='showHistory("Title", ${JSON.stringify(ed?.case_title).replace(/'/g,"&apos;")})'>${isEdited(ed?.case_title)?'✎ History':'Original'}</span></div><input class="inline-edit" id="e-title" value="${val(ed?.case_title)}"/></div>
           <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">${confBar(ed?.confidence_score||0)}</div>
         </div>
         <div class="sec-label">Parties</div>
         <div class="card" style="margin-bottom:1rem">
           <div style="font-size:10.5px;color:var(--text3);margin-bottom:4px">Petitioners</div>
-          ${pets.map(p=>`<div style="font-size:12.5px;margin-bottom:2px">${p?.value||p}</div>`).join('')||'<div class="text-muted">—</div>'}
+          ${pets.map(p=>`<div style="font-size:12.5px;margin-bottom:2px">${val(p)}</div>`).join('')||'<div class="text-muted">—</div>'}
           <div style="font-size:10.5px;color:var(--text3);margin:8px 0 4px">Respondents</div>
-          ${resps.map(r=>`<div style="font-size:12.5px;margin-bottom:2px">${r?.value||r}</div>`).join('')||'<div class="text-muted">—</div>'}
+          ${resps.map(r=>`<div style="font-size:12.5px;margin-bottom:2px">${val(r)}</div>`).join('')||'<div class="text-muted">—</div>'}
+        </div>
+        <div class="btn-row" style="margin-bottom:1rem">
+          <button class="btn-ghost" style="width:100%" onclick="showAuditModal(${id})">View AI Decision Audit 🔍</button>
         </div>
         <div class="sec-label">Validation flags</div>
         <div class="card">
@@ -323,18 +415,25 @@ async function openReviewModal(id) {
       </div>
       <div>
         <div class="sec-label">Directions (${dirs.length})</div>
-        ${dirs.map((d,i)=>`
-          <div class="dir-card">
-            <div class="dir-num">Direction ${i+1}</div>
-            <div class="dir-text">${d?.value||d}</div>
-            ${d?.source_text?`<div class="snip">"${d.source_text}"</div>`:''}
-          </div>`).join('')||'<div class="text-muted">None extracted</div>'}
-        <div class="sec-label" style="margin-top:1rem">Timelines</div>
-        ${times.map(t=>`
+        ${dirs.map((d_obj,i)=>{
+          const d = val(d_obj);
+          return `
+          <div class="dir-card" style="${isEdited(d_obj)?'border-left:3px solid var(--amber)':''}">
+            <div class="dir-num">Direction ${i+1} ${isEdited(d_obj)?'(Edited)':''}</div>
+            <div class="dir-text">${d.text || d.value || d}</div>
+            ${d.page ? `<div class="snip">Page ${d.page}</div>` : ''}
+            ${d.source_text ? `<div class="snip">"${d.source_text}"</div>` : ''}
+          </div>`;
+        }).join('')||'<div class="text-muted">None extracted</div>'}
+        <div class="sec-label" style="margin-top:1rem">Timelines (from Actions)</div>
+        ${times.length ? times.map(t_obj=>{
+          const t = val(t_obj);
+          return `
           <div class="timeline-item">
             <div class="timeline-dot"></div>
-            <div><div style="font-size:12.5px">⏰ ${t?.value||t}</div>${t?.source_text?`<div class="snip">"${t.source_text}"</div>`:''}</div>
-          </div>`).join('')||'<div class="text-muted">None found</div>'}
+            <div><div style="font-size:12.5px">⏰ ${t.text || t.value || t}</div>${t.source_text?`<div class="snip">"${t.source_text}"</div>`:''}</div>
+          </div>`;
+        }).join('') : '<div class="text-muted" style="font-size:11px">Integrated into Action Plan</div>'}
       </div>
     </div>
     <div class="divider"></div>
@@ -348,17 +447,18 @@ async function openReviewModal(id) {
 }
 
 async function verifyJudgment(id, action) {
-  const notes = document.getElementById('review-notes')?.value || '';
-  const changes = action === 'edit' || action === 'approve' ? {
-    case_number: document.getElementById('e-case-number')?.value,
-    court_name:  document.getElementById('e-court-name')?.value,
-    date_of_order: document.getElementById('e-date')?.value,
-    case_title:  document.getElementById('e-title')?.value,
-  } : {};
-
-  const actualAction = action === 'approve' ? 'edit' : action;
+  const body = { action, notes: document.getElementById('review-notes')?.value || '', version: currentJudgment?.extracted_data?.version };
+  if (action === 'approve') {
+    body.action = 'edit';
+    body.changes = {
+      case_number: document.getElementById('e-case-number').value,
+      court_name: document.getElementById('e-court-name').value,
+      date_of_order: document.getElementById('e-date').value,
+      case_title: document.getElementById('e-title').value
+    };
+  }
   try {
-    await API.put(`/api/judgments/${id}/verify`, {action: actualAction, notes, changes});
+    await API.put(`/api/judgments/${id}/verify`, body);
     if (action === 'approve') {
       document.getElementById('modal-body').innerHTML += `<div id="plan-gen" style="margin-top:1rem;color:var(--amber);font-size:13px">⏳ Generating action plan…</div>`;
       try {
@@ -370,23 +470,25 @@ async function verifyJudgment(id, action) {
         document.getElementById('plan-gen').innerHTML = `<div style="color:var(--red)">Action plan failed: ${humanError(e)}</div>`;
       }
     } else {
-      toast('Judgment rejected', 'error');
+      showToast('Judgment rejected', 'error');
       closeModal();
     }
     loadReview();
     updateReviewBadge();
   } catch(e) {
-    toast(humanError(e), 'error');
+    showToast(humanError(e), 'error');
   }
 }
 
 // ── Action plan modal ─────────────────────────────────────────────────────────
+let currentActionPlan = null;
 async function openPlanModal(planId) {
   document.getElementById('modal-overlay').classList.remove('hidden');
   document.getElementById('modal-title').textContent = 'Loading action plan…';
   document.getElementById('modal-body').innerHTML = '<div class="skeleton" style="height:300px"></div>';
   try {
     const plan = await API.get(`/api/action-plans/${planId}`);
+    currentActionPlan = plan;
     const actions = safe(plan.specific_actions);
     const depts = safe(plan.responsible_departments);
     const times = safe(plan.key_timelines);
@@ -407,9 +509,12 @@ async function openPlanModal(planId) {
           </div>
         </div>`).join('')||'<div class="text-muted">None</div>'}
       <div class="sec-label" style="margin-top:1.25rem">Specific actions (${actions.length})</div>
-      ${actions.map((a,i)=>`
+      ${actions.map((a_obj,i)=>{
+        const a = val(a_obj);
+        return `
         <div class="action-item" style="border-left:3px solid ${a.priority==='High'?'var(--red)':a.priority==='Medium'?'var(--amber)':'var(--green)'}">
-          <div class="action-title">${i+1}. ${a.action||'—'}</div>
+          <div class="action-title">${i+1}. ${a.action||'—'} ${isEdited(a_obj)?'(Edited)':''}</div>
+          <div style="font-size:11.5px;color:var(--text1);margin:4px 0"><strong>Impact:</strong> ${a.impact || 'Required for court compliance'}</div>
           <div style="font-size:11px;color:var(--text3);margin-bottom:6px">${a.source_text||''} ${a.page ? `(Page ${a.page})` : ''}</div>
           <div style="font-size:12px;color:var(--text2);margin-bottom:8px"><strong>Deliverable:</strong> ${a.deliverable||'—'}</div>
           <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-style:italic">Reason: ${a.reasoning||'—'}</div>
@@ -419,12 +524,14 @@ async function openPlanModal(planId) {
             <span class="badge b-blue">${a.department||'—'}</span>
             📅 ${a.deadline||'—'}
           </div>
-        </div>`).join('')}
+          ${a.urgency_explanation ? `<div style="font-size:10px;color:var(--amber);margin-top:6px">⚠ ${a.urgency_explanation}</div>` : ''}
+        </div>`;
+      }).join('')}
       <div class="sec-label" style="margin-top:1rem">Reviewer notes</div>
       <textarea id="plan-notes" placeholder="Add notes…"></textarea>
       <div class="btn-row">
-        <button class="btn-success" onclick="verifyPlan(${planId},'approve')">✓ Approve plan</button>
-        <button class="btn-danger"  onclick="verifyPlan(${planId},'reject')">✕ Reject plan</button>
+        <button class="btn-success" onclick="verifyActionPlan(${planId},'approve')">✓ Approve plan</button>
+        <button class="btn-danger"  onclick="verifyActionPlan(${planId},'reject')">✕ Reject plan</button>
         <button class="btn-ghost"   onclick="closeModal()">Close</button>
       </div>`;
   } catch(e) {
@@ -432,14 +539,24 @@ async function openPlanModal(planId) {
   }
 }
 
-async function verifyPlan(planId, action) {
-  const notes = document.getElementById('plan-notes')?.value || '';
+async function verifyActionPlan(id, action) {
+  const body = { action, notes: document.getElementById('plan-notes')?.value || '', version: currentActionPlan?.version };
   try {
-    await API.put(`/api/action-plans/${planId}/verify`, {action, notes});
-    toast(action === 'approve' ? '✓ Action plan approved — visible on Dashboard' : 'Plan rejected', action === 'approve' ? 'success' : 'error');
+    await API.put(`/api/action-plans/${id}/verify`, body);
     closeModal();
-    navigate('dashboard', document.querySelector('.nav-item[onclick*="dashboard"]'));
-  } catch(e) { toast(humanError(e), 'error'); }
+    loadJudgments();
+    showToast(`Action plan ${action}d`);
+  } catch(e) {
+    showToast(humanError(e), 'error');
+  }
+}
+
+function showToast(msg, type='success') {
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 3000);
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
