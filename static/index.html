@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upload — CCMS AI</title>
+<meta name="description" content="CCMS AI — Court Compliance Management System.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚖</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+<div id="toast-container"></div>
+<nav class="mobile-nav">
+  <a class="mnav-item active" onclick="navigate('upload',this)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><span>Upload</span></a>
+  <a class="mnav-item" onclick="navigate('review',this)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>Review</span></a>
+  <a class="mnav-item" onclick="navigate('dashboard',this)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
+  <a class="mnav-item" onclick="navigate('judgments',this)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span>All</span></a>
+</nav>
+
+<div class="app-shell">
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+      <div><div class="logo-title">CCMS AI</div><div class="logo-sub">Compliance Intelligence</div></div>
+    </div>
+    <div class="api-key-box">
+      <div class="api-key-label"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Gemini API Key</div>
+      <input type="password" id="api-key-input" placeholder="AIza..." autocomplete="off" oninput="saveKey(this.value)"/>
+      <div class="api-key-hint">Free at <a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></div>
+    </div>
+    <div class="nav-section-label">Workflow</div>
+    <a class="nav-item active" onclick="navigate('upload',this)"><svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Upload Judgment</a>
+    <a class="nav-item" onclick="navigate('review',this)"><svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Pending Review<span class="nav-badge hidden" id="badge-review">0</span></a>
+    <a class="nav-item" onclick="navigate('dashboard',this)"><svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
+    <a class="nav-item" onclick="navigate('judgments',this)"><svg class="nav-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>All Judgments</a>
+    <div class="sidebar-bottom"><div class="api-status" id="api-status"><span class="status-dot" id="status-dot"></span><span id="status-text">Checking…</span></div></div>
+  </nav>
+
+  <main class="main-content">
+
+    <!-- UPLOAD -->
+    <div id="view-upload" class="view active">
+      <div class="page-header">
+        <h1>Upload Court Judgment</h1>
+        <p>AI extracts case data, maps directives to departments, flags contempt risks. <strong>You verify before anything hits the dashboard.</strong></p>
+        <div class="trust-bar">
+          <span>🔒 Processed locally</span>
+          <span>✓ Human-verified before output</span>
+          <span>⚖ Built for Indian judiciary</span>
+        </div>
+      </div>
+      <div class="upload-zone" id="upload-zone">
+        <div class="upload-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg></div>
+        <div class="upload-title">Drop court judgment PDF here</div>
+        <div class="upload-sub" id="upload-sub-text">Supports digital and scanned PDFs · Max 50MB</div>
+        <input type="file" id="file-input" accept=".pdf" hidden>
+        <button class="btn-primary" onclick="document.getElementById('file-input').click()">Choose PDF file</button>
+      </div>
+      <div class="upload-progress hidden" id="upload-progress">
+        <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-label" id="progress-label">Uploading…</div>
+      </div>
+      <div id="upload-result"></div>
+
+      <!-- EXAMPLE OUTPUT -->
+      <div class="example-section">
+        <div class="example-label">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          Example — Suhas Chakma vs Union of India, Supreme Court, 26 Feb 2026
+        </div>
+        <div class="example-card">
+          <div class="example-grid">
+            <div>
+              <div class="sec-label">Case details</div>
+              <div class="kv-row"><span>Case no.</span><strong>W.P.(C) 1082 of 2020</strong></div>
+              <div class="kv-row"><span>Court</span><strong>Supreme Court of India</strong></div>
+              <div class="kv-row"><span>Date of order</span><strong>26 February 2026</strong></div>
+              <div class="kv-row"><span>Bench</span><strong>Vikram Nath J. &amp; Sandeep Mehta J.</strong></div>
+              <div class="kv-row"><span>Citation</span><strong>2026 INSC 198</strong></div>
+              <div class="kv-row"><span>Subject</span><strong>Open Correctional Institutions — Prison reform, overcrowding</strong></div>
+              <div class="sec-label" style="margin-top:1rem">Parties</div>
+              <div class="kv-row"><span>Petitioner</span><strong>Suhas Chakma</strong></div>
+              <div class="kv-row"><span>Respondents</span><strong>Union of India &amp; Ors.</strong></div>
+              <div class="sec-label" style="margin-top:1rem">Validation flags</div>
+              <div class="flag-row-ex"><span>missing_critical_info</span><span class="pill-false">false</span></div>
+              <div class="flag-row-ex"><span>ambiguous_directions</span><span class="pill-false">false</span></div>
+              <div class="flag-row-ex"><span>requires_legal_review</span><span class="pill-true">true</span></div>
+              <div class="flag-row-ex"><span>contempt_risk</span><span class="pill-false">false</span></div>
+              <div class="flag-row-ex"><span>cross_jurisdiction</span><span class="pill-true">true</span></div>
+              <div class="conf-big mt-1">
+                <div class="conf-track"><div class="conf-track-fill" style="width:94%"></div></div>
+                <span class="conf-label-text">94/100 — High confidence</span>
+              </div>
+            </div>
+            <div>
+              <div class="sec-label">Key directions extracted (8 of 10 shown)</div>
+              <div class="dir-list">
+                <div class="dir-ex"><span class="dir-tag">A(i)</span>States without OCIs shall assess feasibility &amp; develop establishment protocol</div>
+                <div class="dir-ex"><span class="dir-tag">A(ii)</span>All States shall develop time-bound protocol to fill existing OCI vacancies</div>
+                <div class="dir-ex"><span class="dir-tag">B(i)</span>All States/UTs shall allocate adequate OCI capacity for women prisoners</div>
+                <div class="dir-ex"><span class="dir-tag">B(v)</span>Review &amp; amend rules that exclude women from OCI eligibility within 3 months</div>
+                <div class="dir-ex"><span class="dir-tag">C(i)</span>Rationalise eligibility criteria — base on reformative potential, not rigid incarceration periods</div>
+                <div class="dir-ex"><span class="dir-tag">D(i)</span>High-Powered Committee under Justice S. Ravindra Bhat (Retd.) to be constituted</div>
+                <div class="dir-ex"><span class="dir-tag">F(i)</span>All High Courts register suo motu writ for ongoing monitoring</div>
+                <div class="dir-ex"><span class="dir-tag">F(v)</span>Each State to constitute State Monitoring Committee within 4 weeks</div>
+              </div>
+              <div class="sec-label" style="margin-top:1.25rem">Generated action plan</div>
+              <div class="action-ex-row">
+                <div class="action-ex-meta"><span class="badge b-red">High</span><span class="badge b-blue">MHA</span></div>
+                <div class="action-ex-title">Complete logistical setup for High-Powered Committee</div>
+                <div class="action-ex-deadline">📅 By 11 Mar 2026 (2 weeks from judgment)</div>
+              </div>
+              <div class="action-ex-row">
+                <div class="action-ex-meta"><span class="badge b-red">High</span><span class="badge b-blue">All State Home Depts</span></div>
+                <div class="action-ex-title">Constitute State Monitoring Committee for OCI management</div>
+                <div class="action-ex-deadline">📅 By 25 Mar 2026 (4 weeks from judgment)</div>
+              </div>
+              <div class="action-ex-row">
+                <div class="action-ex-meta"><span class="badge b-red">High</span><span class="badge b-blue">All High Courts</span></div>
+                <div class="action-ex-title">Register suo motu writ petition for monitoring compliance with this judgment</div>
+                <div class="action-ex-deadline">📅 Immediately — no deadline specified</div>
+              </div>
+              <div class="action-ex-row">
+                <div class="action-ex-meta"><span class="badge b-amber">Medium</span><span class="badge b-blue">10 State Prison Depts</span></div>
+                <div class="action-ex-title">Assess OCI feasibility &amp; develop protocol (AP, CG, GA, HR, JH, MN, MZ, NL, SK, TS)</div>
+                <div class="action-ex-deadline">📅 By 26 May 2026 (3 months from judgment)</div>
+              </div>
+              <div class="action-ex-row">
+                <div class="action-ex-meta"><span class="badge b-amber">Medium</span><span class="badge b-blue">All State Legal Services Authorities</span></div>
+                <div class="action-ex-title">Submit first quarterly status report to respective High Court</div>
+                <div class="action-ex-deadline">📅 By 21 Aug 2026</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- REVIEW -->
+    <div id="view-review" class="view">
+      <div class="page-header"><h1>Pending Review</h1><p>Verify AI-extracted data — edit inline if needed — approve to generate action plan.</p></div>
+      <div id="review-list"></div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div id="view-dashboard" class="view">
+      <div class="page-header"><h1>Dashboard</h1><p>Trusted output — approved action plans only</p></div>
+      <div class="stats-grid" id="stats-grid"></div>
+      <div class="sec-label" style="margin-top:2rem">Approved action plans</div>
+      <div id="approved-list"></div>
+    </div>
+
+    <!-- ALL JUDGMENTS -->
+    <div id="view-judgments" class="view">
+      <div class="page-header">
+        <h1>All Judgments</h1>
+        <div class="filter-row">
+          <select id="status-filter" onchange="loadJudgments()"><option value="">All statuses</option><option value="pending">Pending</option><option value="extracting">Extracting</option><option value="extracted">Extracted</option><option value="verified">Verified</option><option value="rejected">Rejected</option></select>
+          <button class="btn-ghost" onclick="loadJudgments()">↻ Refresh</button>
+        </div>
+      </div>
+      <div id="judgments-table"></div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay hidden" id="modal-overlay" onclick="handleOverlayClick(event)">
+  <div class="modal" id="modal-box" onclick="event.stopPropagation()" role="dialog" aria-modal="true">
+    <div class="modal-header">
+      <h2 id="modal-title">Loading…</h2>
+      <button class="modal-close" onclick="closeModal()" aria-label="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
