@@ -372,12 +372,14 @@ async function updateReviewBadge() {
   } catch {}
 }
 
+let currentJudgment = null;
 async function openReviewModal(id) {
   document.getElementById('modal-overlay').classList.remove('hidden');
   document.getElementById('modal-title').textContent = 'Loading judgment…';
   document.getElementById('modal-body').innerHTML = '<div class="skeleton" style="height:300px"></div>';
 
   const j = await API.get(`/api/judgments/${id}`);
+  currentJudgment = j;
   const ed = j.extracted_data;
   const dirs = safe(ed?.directions);
   const times = safe(ed?.timelines);
